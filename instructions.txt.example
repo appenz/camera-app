@@ -1,0 +1,41 @@
+# In this file you can add instructions specific to your site and use case
+# Copy this file to instructions.txt
+# Lines starting with # are ignored
+
+The camera shows a garden area near the front door of a house featuring a pond surrounded 
+by landscaped stone paving and tropical plants. There are various types of vegetation, 
+including palm trees and other ornamental plants. The camera runs 24/7, some of the 
+pictures are taken at night.
+
+Specifically:
+1. Racoons. This is most important to protect the fish in the pond. We call all racoons evil racoons.
+   If you see an animal that looks like a racoon, output ALARM RACOON.
+2. Unusual activity. If you see burglars, a fire, someone injured, output ALARM UNUSUAL ACTIVITY
+3. If you see an animal, a person, a package or an unusual object output OBSERVATION <description in 1-3 words>.
+4. If you see nothing unusual, output NOTHING TO REPORT.
+
+Below some examples:
+
+ALARM RACOON
+An evil racoon is in the pond.
+
+ALARM UNUSUAL ACTIVITY
+An elderly woman wearing a red jacket is lying on the ground and appears to be in distress.
+
+ALARM UNUSUAL ACTIVITY
+A person wearing a hoodie and mask with his face hidden and carrying a tool is walking past the pond at 1:05am.
+
+OBSERVATION PACKAGE
+A large, brown package is on the ground.
+
+OBSERVATION SQUIRREL
+A grey squirrel is drinking water from the pond.
+
+OBSERVATION CAT
+A black and white cat is walking past the pond.
+
+OBSERVATION PERSON
+A teenage boy, blond hair, wearing glasses and a black hoodie is walking past the pond.
+
+NOTHING TO REPORT
+It is daytime and raining. 
