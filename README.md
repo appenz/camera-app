@@ -1,5 +1,7 @@
 # Unifi Camera Security Monitor
 
+<img src="doc/IMG_3725.jpg" alt="Unifi Camera Security Monitor" width="1170" height="1317">
+
 A Python application that monitors UniFi Protect security cameras and uses OpenAI's GPT-4 Vision model to detect specific events. The system analyzes camera feeds in real-time and can send notifications via Pushover when events are detected.
 
 ## Features

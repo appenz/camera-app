@@ -40,13 +40,12 @@ def load_instructions():
     try:
         with open('instructions.txt', 'r') as f:
             for line in f:
-                line = line.strip()
-                if line and not line.startswith('#'):
+                if not line.startswith('#'):
                     instructions.append(line)
     except FileNotFoundError:
         logger.warning("No instructions.txt file found. Using default instructions.")
         return None
-    return '\n'.join(instructions)
+    return ''.join(instructions)
 
 # Base prompt with general instructions
 
@@ -184,7 +183,7 @@ async def callback(msg: WSSubscriptionMessage):
                 
                 # Process the image
                 try:
-                    analysis = await process_camera_image(protect, camera, formatted_prompt, OPENAI_API_KEY, test_mode)
+                    analysis, image_path = await process_camera_image(protect, camera, formatted_prompt, OPENAI_API_KEY, test_mode)
                     if not analysis:
                         logger.error(f"no analysis for image from {camera.name}.")
                         return
@@ -226,7 +225,8 @@ async def callback(msg: WSSubscriptionMessage):
                                     PUSHOVER_API_TOKEN, 
                                     PUSHOVER_USER_KEY,
                                     priority=priority,
-                                    title=title
+                                    title=title,
+                                    attachment=image_path
                                 )
                                 last_notification_time = current_time
                 except Exception as e:
@@ -299,18 +299,39 @@ async def main():
     if test_mode:
         logger.warning("Test mode enabled - sending all images to OpenAI for analysis, this can get expensive!")
 
+    camera_filter = CAMERA_FILTER
+    default_camera = None
+    if camera_filter:
+        protect = ProtectApiClient(
+            UNIFI_HOST,
+            UNIFI_PORT,
+            UNIFI_USERNAME,
+            UNIFI_PASSWORD,
+            verify_ssl=False
+        )
+        await protect.update()
+        default_camera = next((cam for cam in protect.bootstrap.cameras.values() if cam.name == camera_filter), None)
+
     if args.notify:
         logger.info("Pushover notifications enabled")
         # Send a startup notification
+        message = "Camera app started and monitoring for events"
+        image_path = None
+        
+        # Try to get an image if we have a default camera
+        if default_camera:
+            image_path = await save_camera_image(protect, default_camera, test_mode=True)
+            if not image_path:
+                message += " (no image available)"
+        
         send_notification(
-            "Camera app started and monitoring for events",
+            message,
             PUSHOVER_API_TOKEN,
             PUSHOVER_USER_KEY,
             priority=-1,
-            title="Camera App Started"
+            title="Camera App Started",
+            attachment=image_path
         )
-
-    camera_filter = CAMERA_FILTER
 
     protect = ProtectApiClient(
         UNIFI_HOST,
@@ -320,7 +341,7 @@ async def main():
         verify_ssl=False
     )
 
-    await protect.update() # this will initialize the protect .bootstrap and open a Websocket connection for updates
+    await protect.update()
 
     cam_string = ""
     for camera in protect.bootstrap.cameras.values():

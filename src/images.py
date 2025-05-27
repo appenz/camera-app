@@ -131,13 +131,14 @@ async def process_camera_image(protect, camera, prompt, api_key, test_mode=False
         test_mode: Whether to force analysis regardless of motion detection
     
     Returns:
-        str: Analysis result or None if image couldn't be saved
+        tuple: (analysis_result, image_path) or (None, None) if image couldn't be saved
     """
     try:
         image_path = await save_camera_image(protect, camera, test_mode=test_mode)
         if not image_path:
-            return None
-        return await analyze_image(image_path, prompt, api_key)
+            return None, None
+        analysis = await analyze_image(image_path, prompt, api_key)
+        return analysis, image_path
     except Exception as e:        
         # Get current timestamp
         timestamp = get_camera_time().strftime("%Y-%m-%d %H:%M:%S")
@@ -153,5 +154,5 @@ async def process_camera_image(protect, camera, prompt, api_key, test_mode=False
         with open('log/error.log', 'a') as f:
             f.write(error_msg)
         
-        return None
+        return None, None
 

@@ -1,6 +1,7 @@
 import requests
+import os
 
-def send_notification(message, api_token, user_key, priority=0, title=None):
+def send_notification(message, api_token, user_key, priority=0, title=None, attachment=None):
     """Send a notification via Pushover.
     
     Args:
@@ -14,6 +15,7 @@ def send_notification(message, api_token, user_key, priority=0, title=None):
              1: High priority
              2: Emergency priority
         title (str): Message title (optional)
+        attachment (str): Path to image file (optional)
         
     Returns:
         bool: True if notification was sent successfully, False otherwise
@@ -33,10 +35,24 @@ def send_notification(message, api_token, user_key, priority=0, title=None):
         if title:
             data["title"] = title
             
+        files = None
+        if attachment:
+            if not os.path.isfile(attachment):
+                return False
+            files = {
+                "attachment": (os.path.basename(attachment), open(attachment, "rb"))
+            }
+            
         response = requests.post(
             "https://api.pushover.net/1/messages.json",
-            data=data
+            data=data,
+            files=files
         )
+        
+        # Close file if it was opened
+        if files and "attachment" in files:
+            files["attachment"][1].close()
+            
         return response.status_code == 200
     except Exception:
         return False 
