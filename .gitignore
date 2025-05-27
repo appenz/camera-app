@@ -37,11 +37,9 @@ Thumbs.db
 *.temp
 *.bak
 
-
 # ---- Project Specific ----
-
 events/
 images/
-Makefile
 log/
 instructions.txt
+Makefile
