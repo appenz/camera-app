@@ -14,8 +14,10 @@ RUN uv sync
 
 # Copy only the source code and environment file
 COPY --chown=devuser:devuser src/ src/
+COPY --chown=devuser:devuser instructions.txt* . 
 
 # Create necessary directories
 RUN mkdir -p images log events
 
-CMD ["uv", "run", "src/main.py", "--notify"] 
+CMD ["uv", "run", "src/main.py", "--notify"]
+ 

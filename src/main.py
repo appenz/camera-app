@@ -18,6 +18,7 @@ args = None
 camera_filter = None
 test_mode = False  # Set to True to analyze all images
 protect = None
+custom_instructions = None
 
 # Track last notification times for backoff logic
 last_notification_time = None
@@ -62,10 +63,6 @@ The current time is {time}.
 
 {instructions}
 """
-
-# Load custom instructions if available
-custom_instructions = load_instructions()
-prompt = base_prompt.format(instructions=custom_instructions if custom_instructions else "")
 
 # Set up logging
 def setup_logging(quiet=False):
@@ -157,10 +154,13 @@ async def callback(msg: WSSubscriptionMessage):
     global protect
     global prompt
     global args
+    global last_notification_time
+    global last_alarm_time
+    global custom_instructions
 
     timestamp = get_camera_time().strftime("%m-%d %H:%M:%S")
-    current_time = get_camera_time().strftime("%H:%M")
-    formatted_prompt = prompt.format(time=current_time)
+    current_time = get_camera_time().strftime("%A %H:%M")  # %A gives full weekday name
+    formatted_prompt = base_prompt.format(time=current_time, instructions=custom_instructions if custom_instructions else "")
 
     # Handle Initialization
     if msg.action == WSAction.ADD:
@@ -202,12 +202,14 @@ async def callback(msg: WSSubscriptionMessage):
                                 # If an alarm was sent in the last minute, downgrade to normal priority
                                 if last_alarm_time and (current_time - last_alarm_time) < timedelta(minutes=1):
                                     priority = 0
+                                    logger.info(f"Skipping notification (alarm) within backoff period")
                                 else:
                                     priority = 1
                                     last_alarm_time = current_time
                             elif analysis.startswith("OBSERVATION"):
                                 # Skip non-alarm notifications if any notification was sent in the last 10 seconds
                                 if last_notification_time and (current_time - last_notification_time) < timedelta(seconds=10):
+                                    logger.info(f"Skipping notification (observation) within backoff period")
                                     return
                                 priority = -1
                             else:
@@ -259,6 +261,8 @@ async def main():
     global test_mode
     global logger
     global args
+    global prompt
+    global custom_instructions
 
     # Parse command line arguments
     args = parse_args()
@@ -267,6 +271,9 @@ async def main():
     # Set up logging
     logger = setup_logging(quiet=args.quiet)
     logger.info("Starting camera app")
+
+    # Load custom instructions if available
+    custom_instructions = load_instructions()
 
     # Check credentials
     check_credentials(notify_enabled=args.notify)
@@ -294,6 +301,14 @@ async def main():
 
     if args.notify:
         logger.info("Pushover notifications enabled")
+        # Send a startup notification
+        send_notification(
+            "Camera app started and monitoring for events",
+            PUSHOVER_API_TOKEN,
+            PUSHOVER_USER_KEY,
+            priority=-1,
+            title="Camera App Started"
+        )
 
     camera_filter = CAMERA_FILTER
 
