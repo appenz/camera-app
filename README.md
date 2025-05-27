@@ -1,8 +1,8 @@
 # Unifi Camera Security Monitor
 
-<img src="doc/IMG_3725.jpg" alt="Unifi Camera Security Monitor" width="1170" height="1317">
+A Python application that monitors UniFi Protect security cameras and uses OpenAI's GPT-4o Vision LLM to detect specific events. Thanks to the LLM, the rules for events can be very complex, i.e. you can monitor parking spots, look for Racoons or check the weather. If GPT-4o understands it, it will work.
 
-A Python application that monitors UniFi Protect security cameras and uses OpenAI's GPT-4 Vision model to detect specific events. The system analyzes camera feeds in real-time and can send notifications via Pushover when events are detected.
+The system analyzes camera feeds in real-time and can send notifications with images via Pushover when events are detected. It is written in python, runs on a host or in a Docker container, is open source (Apache 2.0) and relatively cheap to operate (for me about ~$0.25/day).
 
 ## Features
 
@@ -11,6 +11,10 @@ The application offers real-time monitoring of Unifi Protect security cameras. I
 - If yes, it will take an image every 10 seconds and send it to an OpenAI image model for analysis
 - What to look for in the image can be steered via a prompt (e.g. suspicious people, racoons, a parking spot being empty etc.)
 - It supports monitoring multiple cameras or only a single one
+
+The notifications you receive include images and look like this.
+
+<img src="/doc/IMG_3725.jpg" alt="Unifi Camera LLM App Example" width="450">
 
 ## Setup
 
