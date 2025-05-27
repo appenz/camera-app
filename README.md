@@ -1,4 +1,4 @@
-# Unifi Camera Security Monitor
+# AI Unifi Camera Security Monitor
 
 A Python application that monitors UniFi Protect security cameras and uses OpenAI's GPT-4o Vision LLM to detect specific events. Thanks to the LLM, the rules for events can be very complex, i.e. you can monitor parking spots, look for Racoons or check the weather. If GPT-4o understands it, it will work.
 
