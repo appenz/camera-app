@@ -33,8 +33,10 @@ The application uses the `uv` package manager, which simplifies the setup proces
 
 5. Do a test run of the app. This will print descriptions of any observations.
    ```bash
-   uv run src/main.py --test
+   uv run --env-file .env src/main.py --test
    ```
+
+   **Note:** The `--env-file .env` flag tells `uv` to load environment variables from your `.env` file. This is the recommended way to run the application as it keeps your credentials secure and separate from your code.
 
 ## Custom Instructions
 
@@ -110,13 +112,15 @@ The application supports the following command line arguments:
 - `--notify`: Enable Pushover notifications for alarms and observations (default is off)
 - `--testalarm`: Send a test alarm notification and exit (useful for testing notification setup)
 
+**Note:** When using `uv run`, you can use the `--env-file .env` flag to automatically load environment variables from your `.env` file.
+
 Example usage:
 ```bash
 # Run with notifications enabled
-uv run src/main.py --notify
+uv run --env-file .env src/main.py --notify
 
 # Run in test mode with notifications
-uv run src/main.py --test --notify
+uv run --env-file .env src/main.py --test --notify
 
 ```
 
@@ -136,12 +140,12 @@ uv run src/main.py --test --notify
 
 To enable notifications, run the application with the `--notify` flag:
 ```bash
-uv run src/main.py --notify
+uv run --env-file .env src/main.py --notify
 ```
 
 You can test your notification setup using:
 ```bash
-uv run src/main.py --testalarm
+uv run --env-file .env src/main.py --testalarm
 ```
 
 ## Docker Container
