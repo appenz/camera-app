@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 import pytz
 from uiprotect import ProtectApiClient
 from events import display_event_history
-from images import save_camera_image, analyze_image, process_camera_image
+from images import save_camera_image, analyze_image, process_camera_image, compare_description
 from uiprotect.data.websocket import WSAction, WSSubscriptionMessage
 from uiprotect.data.devices import Camera
 from pushover import send_notification
@@ -24,6 +24,9 @@ custom_instructions = None
 last_notification_time = None
 last_alarm_time = None
 
+# Track last observation that generated a notification per camera
+last_observation_by_camera = {}
+
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 UNIFI_USERNAME = os.getenv("UNIFI_USERNAME")
 UNIFI_PASSWORD = os.getenv("UNIFI_PASSWORD")
@@ -33,6 +36,21 @@ CAMERA_FILTER = os.getenv("CAMERA_FILTER")  # Optional camera filter
 PUSHOVER_API_TOKEN = os.getenv("PUSHOVER_API_TOKEN")
 PUSHOVER_USER_KEY = os.getenv("PUSHOVER_USER_KEY")
 TIMEZONE = os.getenv("TIMEZONE", "").strip("'\"")
+
+# Nighttime window for high priority alarms (local time)
+NIGHT_START = (0, 0)    # 00:00
+NIGHT_END = (5, 30)     # 05:30
+
+def is_night(now=None):
+    """Return True if the given time is within the night window.
+    If now is None, uses current local time.
+    """
+    if now is None:
+        now = get_camera_time()
+    minutes = now.hour * 60 + now.minute
+    start_minutes = NIGHT_START[0] * 60 + NIGHT_START[1]
+    end_minutes = NIGHT_END[0] * 60 + NIGHT_END[1]
+    return start_minutes <= minutes < end_minutes
 
 def load_instructions():
     """Load instructions from file, ignoring comment lines."""
@@ -156,6 +174,7 @@ async def callback(msg: WSSubscriptionMessage):
     global last_notification_time
     global last_alarm_time
     global custom_instructions
+    global last_observation_by_camera
 
     timestamp = get_camera_time().strftime("%m-%d %H:%M:%S")
     current_time = get_camera_time().strftime("%A %H:%M")  # %A gives full weekday name
@@ -203,7 +222,8 @@ async def callback(msg: WSSubscriptionMessage):
                                     priority = 0
                                     logger.info(f"Skipping notification (alarm) within backoff period")
                                 else:
-                                    priority = 1
+                                    # Night-only high priority, otherwise normal
+                                    priority = 1 if is_night(current_time) else 0
                                     last_alarm_time = current_time
                             elif analysis.startswith("OBSERVATION"):
                                 # Skip non-alarm notifications if any notification was sent in the last 10 seconds
@@ -211,6 +231,16 @@ async def callback(msg: WSSubscriptionMessage):
                                     logger.info(f"Skipping notification (observation) within backoff period")
                                     return
                                 priority = -1
+                                # Person dedupe (runs after backoff)
+                                lines = analysis.strip().split('\n')
+                                first_line = lines[0].strip()
+                                message_for_storage = lines[1]
+                                if first_line.startswith("OBSERVATION PERSON"):
+                                    prev = last_observation_by_camera.get(camera_name)
+                                    if prev and (current_time - prev["timestamp"]) < timedelta(minutes=10):
+                                        if compare_description(prev["description"], message_for_storage, OPENAI_API_KEY):
+                                            logger.info(f"Skipping notification (person dedupe) within 10 minutes for {camera_name}")
+                                            return
                             else:
                                 priority = -2
 
@@ -229,6 +259,9 @@ async def callback(msg: WSSubscriptionMessage):
                                     attachment=image_path
                                 )
                                 last_notification_time = current_time
+                                # Store last observation description for dedupe across 10 minutes
+                                if analysis.startswith("OBSERVATION"):
+                                    last_observation_by_camera[camera_name] = {"description": message, "timestamp": current_time}
                 except Exception as e:
                     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     error_message = f"{timestamp} - Error processing image from {camera.name}: {str(e)}\n"

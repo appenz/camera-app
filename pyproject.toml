@@ -8,4 +8,5 @@ dependencies = [
     "pytz>=2025.2",
     "requests>=2.32.3",
     "uiprotect>=7.6.0",
+    "openai>=1.40.0",
 ]

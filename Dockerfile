@@ -9,7 +9,7 @@ USER devuser
 
 # Set up the python environment with uv
 RUN uv init
-RUN uv add uiprotect requests pytz tzdata
+RUN uv add uiprotect requests pytz tzdata openai
 RUN uv sync
 
 # Copy only the source code and environment file

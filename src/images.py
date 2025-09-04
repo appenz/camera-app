@@ -7,6 +7,8 @@ import logging
 from datetime import datetime
 import pytz
 from pathlib import Path
+from typing import Any
+from openai import OpenAI
 
 # Get the logger
 logger = logging.getLogger()
@@ -91,7 +93,7 @@ async def analyze_image(image_path, prompt, api_key):
     }
     
     payload = {
-        "model": "gpt-4o-mini",
+        "model": "gpt-5-mini",
         "messages": [{
             "role": "user",
             "content": [
@@ -155,4 +157,39 @@ async def process_camera_image(protect, camera, prompt, api_key, test_mode=False
             f.write(error_msg)
         
         return None, None
+
+def compare_description(desc_a: str, desc_b: str, api_key: str) -> bool:
+    """Compare two person descriptions using OpenAI SDK to decide if they are the same person.
+    Returns True if they likely refer to the same person, False otherwise.
+    """
+    try:
+        client = OpenAI(api_key=api_key, timeout=10)
+
+        system_prompt = (
+            "You compare two short surveillance descriptions and answer with exactly one word: "
+            "SAME if both clearly refer to the same person, otherwise DIFFERENT. "
+        )
+
+        user_prompt = (
+            f"Description A: {desc_a}\n"
+            f"Description B: {desc_b}\n\n"
+            "Answer with exactly one word: SAME or DIFFERENT"
+        )
+
+        completion = client.chat.completions.create(
+            model="gpt-5-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=5,
+            temperature=0,
+            n=1,
+        )
+
+        content = completion.choices[0].message.content.strip().upper()
+        return "SAME" in content
+    except Exception as e:
+        logger.error(f"compare_description exception: {e}")
+        return False
 
