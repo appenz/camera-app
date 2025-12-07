@@ -19,5 +19,5 @@ COPY --chown=devuser:devuser instructions.txt* .
 # Create necessary directories
 RUN mkdir -p images log events
 
-CMD ["uv", "run", "src/main.py", "--notify"]
+CMD ["uv", "run", "src/main.py", "--notify", "--scheduled-exit"]
  

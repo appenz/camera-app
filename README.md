@@ -49,7 +49,7 @@ The application can optionally use [Pushover](https://pushover.net/) for sending
 - **ALARM** (Priority 1): Urgent situations that require immediate attention
   - These notifications will make your device make a sound and vibrate
 
-- **OBSERVATION** (Priority -1): Non-urgent observations
+- **OBSERVATION** (Priority -2): Non-urgent observations
   - These notifications are delivered quietly without disturbing you
 
 To avoid spam, the system uses backoff logic:

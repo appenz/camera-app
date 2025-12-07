@@ -1,31 +1,21 @@
 import os
 import time
 import base64
-import requests
 import traceback
 import logging
 from datetime import datetime
 import pytz
+TIMEZONE = os.getenv("TIMEZONE", "").strip("'\"")
+try:
+    TZ = pytz.timezone(TIMEZONE) if TIMEZONE else None
+except pytz.exceptions.UnknownTimeZoneError:
+    TZ = None
 from pathlib import Path
 from typing import Any
 from openai import OpenAI
 
 # Get the logger
 logger = logging.getLogger()
-
-# Get timezone from environment
-TIMEZONE = os.getenv("TIMEZONE")
-
-def get_camera_time():
-    """Get current time in camera's timezone."""
-    if TIMEZONE:
-        try:
-            tz = pytz.timezone(TIMEZONE)
-            return datetime.now(tz)
-        except pytz.exceptions.UnknownTimeZoneError:
-            logger.error(f"Invalid timezone: {TIMEZONE}. Using server's local time.")
-            return datetime.now()
-    return datetime.now()
 
 def get_image_filename(camera_name, timestamp):
     """Generate filename for camera images."""
@@ -47,7 +37,7 @@ async def get_high_quality_snapshot(protect, camera):
         )
     
     if image is None:
-        timestamp = get_camera_time().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = (datetime.now(TZ) if TZ is not None else datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
         error_message = f"{timestamp} - No image received from camera {camera.name}\n"
         with open('log/error.log', 'a') as error_log:
             error_log.write(error_message)
@@ -63,7 +53,7 @@ async def save_camera_image(protect, camera, timestamp=None, test_mode=False):
     
     # Get timestamp
     if timestamp is None:
-        timestamp = get_camera_time()
+        timestamp = datetime.now(TZ) if TZ is not None else datetime.now()
     
     # Save image
     filename = get_image_filename(camera.name, timestamp)
@@ -81,45 +71,34 @@ async def save_camera_image(protect, camera, timestamp=None, test_mode=False):
     return str(filepath)
 
 async def analyze_image(image_path, prompt, api_key):
-    """Analyze image using OpenAI API."""
-    # Encode image
-    with open(image_path, "rb") as f:
-        base64_image = base64.b64encode(f.read()).decode('utf-8')
-    
-    # Call OpenAI API
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}"
-    }
-    
-    payload = {
-        "model": "gpt-5-mini",
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
+    """Analyze image using OpenAI SDK."""
+    try:
+        # Encode image to base64 data URL
+        with open(image_path, "rb") as f:
+            base64_image = base64.b64encode(f.read()).decode("utf-8")
+
+        client = OpenAI(api_key=api_key, timeout=20.0)
+
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
                 {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": f"data:image/jpeg;base64,{base64_image}"
-                    }
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"},
+                        },
+                    ],
                 }
-            ]
-        }],
-        "max_tokens": 1000
-    }
-    
-    # Get response
-    response = requests.post(
-        "https://api.openai.com/v1/chat/completions",
-        headers=headers,
-        json=payload
-    )
-    
-    if response.status_code == 200:
-        return response.json()['choices'][0]['message']['content']
-    else:
-        print(f"Error: {response.status_code}")
+            ],
+            max_completion_tokens=1000,
+        )
+
+        return completion.choices[0].message.content
+    except Exception as e:
+        logger.error(f"analyze_image exception: {e}")
         return None
 
 async def process_camera_image(protect, camera, prompt, api_key, test_mode=False):
@@ -143,7 +122,7 @@ async def process_camera_image(protect, camera, prompt, api_key, test_mode=False
         return analysis, image_path
     except Exception as e:        
         # Get current timestamp
-        timestamp = get_camera_time().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = (datetime.now(TZ) if TZ is not None else datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
         
         # Format error message with timestamp and full traceback
         error_msg = f"\n[{timestamp}] Error processing image from camera {camera.name}:\n"
@@ -166,8 +145,9 @@ def compare_description(desc_a: str, desc_b: str, api_key: str) -> bool:
         client = OpenAI(api_key=api_key, timeout=10)
 
         system_prompt = (
-            "You compare two short surveillance descriptions and answer with exactly one word: "
-            "SAME if both clearly refer to the same person, otherwise DIFFERENT. "
+            "Compare two short surveillance descriptions of people and answer with exactly one word: "
+            "Note that the descriptions are imprecise. Ingore age. Focus on clothing. "
+            "SAME if this could have been the same person, DIFFERENT if this is impossible. "
         )
 
         user_prompt = (
@@ -177,17 +157,17 @@ def compare_description(desc_a: str, desc_b: str, api_key: str) -> bool:
         )
 
         completion = client.chat.completions.create(
-            model="gpt-5-mini",
+            model="gpt-4.1-nano",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=5,
-            temperature=0,
-            n=1,
+            max_completion_tokens=10,
         )
 
+        print(completion)
         content = completion.choices[0].message.content.strip().upper()
+        logger.info(f"compare_description content: {content}")
         return "SAME" in content
     except Exception as e:
         logger.error(f"compare_description exception: {e}")
