@@ -41,5 +41,5 @@ Thumbs.db
 events/
 images/
 log/
-instructions.txt
+*.prompt
 Makefile

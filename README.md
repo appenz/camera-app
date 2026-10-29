@@ -40,7 +40,7 @@ The application uses the `uv` package manager, which simplifies the setup proces
 
 ## Custom Instructions
 
-To tailor the event detection in the camera feed to your specific requirements, you can add custom instructions in the `instructions.txt` file. This file allows you to specify what events to monitor. Note that any line beginning with `#` is considered a comment and will be ignored. For guidance, refer to the example provided in `instructions.txt.example`.
+Each motion event is first classified as a person, a raccoon, another animal, or nothing. A raccoon triggers a high-priority alert. For animals and people, the app asks a model what to report using the rules in `animals.prompt` and `person.prompt`; people are only reported between 23:00 and 06:00. Copy `animals.prompt.example` and `person.prompt.example` to get started. Lines beginning with `#` are ignored. The thresholds and alert priorities are in `src/classify.py` and `src/alerts.py`.
 
 ## Notifications
 

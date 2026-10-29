@@ -1,9 +1,9 @@
 import os
 import time
+import asyncio
 import base64
-import traceback
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 TIMEZONE = os.getenv("TIMEZONE", "").strip("'\"")
 try:
@@ -11,63 +11,114 @@ try:
 except pytz.exceptions.UnknownTimeZoneError:
     TZ = None
 from pathlib import Path
-from typing import Any
 from openai import OpenAI
 
 # Get the logger
 logger = logging.getLogger()
+
+OPENAI_MODEL = "gpt-6-luna"
+OPENAI_REASONING_EFFORT = "low"
+
+UNIFI_HOST = os.getenv("UNIFI_HOST", "192.168.1.1")
+RTSPS_PORT = int(os.getenv("UNIFI_RTSPS_PORT", "7441"))
+RTSP_TIMEOUT_SECONDS = 10
+IMAGE_RETENTION_DAYS = 7
+_last_prune = None
 
 def get_image_filename(camera_name, timestamp):
     """Generate filename for camera images."""
     timestamp_str = timestamp.strftime("%Y-%m-%d_%H-%M-%S")
     return f"{camera_name}_{timestamp_str}.jpg"
 
-async def get_high_quality_snapshot(protect, camera):
-    """Get high quality snapshot from camera."""
-    camera_id = camera.id
-    path = "snapshot"
-    params: dict[str, Any] = {}
-    params["ts"] = int(time.time() * 1000)
-    params["force"] = "true"
-    params["highQuality"] = "true"
-    image = await protect.api_request_raw(
-            f"cameras/{camera_id}/{path}",
-            params=params,
-            raise_exception=False,
-        )
-    
+async def get_rtsps_url(protect, camera):
+    """RTSPS URL of the camera's highest-resolution stream, or None if no stream is shared."""
+    # Read the raw camera JSON: uiprotect's channel model has changed across versions.
+    data = await protect.api_request_obj(f"cameras/{camera.id}")
+    channels = [c for c in data.get("channels", []) if c.get("isRtspEnabled") and c.get("rtspAlias")]
+    if not channels:
+        return None
+    channel = max(channels, key=lambda c: c.get("width", 0))
+    return f"rtsps://{UNIFI_HOST}:{RTSPS_PORT}/{channel['rtspAlias']}"
+
+async def save_rtsp_frame(protect, camera, filepath):
+    """Grab one full-resolution frame from the camera's RTSPS stream. Returns True on success."""
+    try:
+        url = await get_rtsps_url(protect, camera)
+    except Exception as e:
+        logger.warning(f"Could not look up RTSP stream for camera {camera.name}: {e}")
+        return False
+    if url is None:
+        logger.warning(f"No RTSP-enabled channel on camera {camera.name}")
+        return False
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-y", "-v", "error", "-rtsp_transport", "tcp", "-i", url,
+        "-frames:v", "1", "-q:v", "4", str(filepath),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, stderr = await asyncio.wait_for(proc.communicate(), RTSP_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        logger.warning(f"RTSP frame grab timed out for camera {camera.name}")
+        return False
+    if proc.returncode != 0 or not filepath.exists():
+        # The URL contains the stream's access token; keep it out of the log.
+        error = stderr.decode(errors="replace").replace(url, "<rtsp url>").strip()[-200:]
+        logger.warning(f"RTSP frame grab failed for camera {camera.name}: {error}")
+        return False
+    return True
+
+async def get_snapshot(camera):
+    """Get a snapshot from Protect. Protect always returns 640x360, whatever size is requested."""
+    try:
+        image = await camera.get_snapshot()
+    except Exception as e:
+        logger.error(f"Snapshot request failed for camera {camera.name}: {e}")
+        image = None
+
     if image is None:
         timestamp = (datetime.now(TZ) if TZ is not None else datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
         error_message = f"{timestamp} - No image received from camera {camera.name}\n"
         with open('log/error.log', 'a') as error_log:
             error_log.write(error_message)
         logger.error(f"No image received from camera {camera.name}")
-    
+
     return image
+
+def prune_images(images_dir, now):
+    """Delete saved camera images older than IMAGE_RETENTION_DAYS, at most once an hour."""
+    global _last_prune
+    if _last_prune is not None and now - _last_prune < timedelta(hours=1):
+        return
+    _last_prune = now
+    cutoff = time.time() - IMAGE_RETENTION_DAYS * 86400
+    for path in images_dir.glob("*.jpg"):
+        if not path.name.startswith("test_") and path.stat().st_mtime < cutoff:
+            path.unlink(missing_ok=True)
 
 async def save_camera_image(protect, camera, timestamp=None, test_mode=False):
     """Save camera image with timestamp-based filename."""
-    # Create images directory
     images_dir = Path("images")
     images_dir.mkdir(exist_ok=True)
-    
-    # Get timestamp
+
     if timestamp is None:
         timestamp = datetime.now(TZ) if TZ is not None else datetime.now()
-    
-    # Save image
-    filename = get_image_filename(camera.name, timestamp)
-    filepath = images_dir / filename
-    
-    # Get image at highest quality resolution
-    image = await get_high_quality_snapshot(protect, camera)
+    prune_images(images_dir, timestamp)
 
+    filepath = images_dir / get_image_filename(camera.name, timestamp)
+    try:
+        if await save_rtsp_frame(protect, camera, filepath):
+            return str(filepath)
+    except Exception as e:
+        logger.warning(f"RTSP frame grab failed for camera {camera.name}: {e}")
+
+    logger.warning(f"Falling back to 640x360 snapshot for camera {camera.name}")
+    image = await get_snapshot(camera)
     if image is None:
         return None
-
     with open(filepath, "wb") as f:
         f.write(image)
-    
     return str(filepath)
 
 async def analyze_image(image_path, prompt, api_key):
@@ -80,7 +131,8 @@ async def analyze_image(image_path, prompt, api_key):
         client = OpenAI(api_key=api_key, timeout=20.0)
 
         completion = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=OPENAI_MODEL,
+            reasoning_effort=OPENAI_REASONING_EFFORT,
             messages=[
                 {
                     "role": "user",
@@ -93,83 +145,10 @@ async def analyze_image(image_path, prompt, api_key):
                     ],
                 }
             ],
-            max_completion_tokens=1000,
+            max_completion_tokens=2000,
         )
 
         return completion.choices[0].message.content
     except Exception as e:
         logger.error(f"analyze_image exception: {e}")
         return None
-
-async def process_camera_image(protect, camera, prompt, api_key, test_mode=False):
-    """Save and analyze a camera image.
-    
-    Args:
-        protect: ProtectApiClient instance
-        camera: Camera instance
-        prompt: Formatted prompt for analysis
-        api_key: OpenAI API key
-        test_mode: Whether to force analysis regardless of motion detection
-    
-    Returns:
-        tuple: (analysis_result, image_path) or (None, None) if image couldn't be saved
-    """
-    try:
-        image_path = await save_camera_image(protect, camera, test_mode=test_mode)
-        if not image_path:
-            return None, None
-        analysis = await analyze_image(image_path, prompt, api_key)
-        return analysis, image_path
-    except Exception as e:        
-        # Get current timestamp
-        timestamp = (datetime.now(TZ) if TZ is not None else datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
-        
-        # Format error message with timestamp and full traceback
-        error_msg = f"\n[{timestamp}] Error processing image from camera {camera.name}:\n"
-        error_msg += f"Exception: {str(e)}\n"
-        error_msg += "Traceback:\n"
-        error_msg += traceback.format_exc()
-        error_msg += "\n" + "-"*80 + "\n"
-        
-        # Append to error log file
-        with open('log/error.log', 'a') as f:
-            f.write(error_msg)
-        
-        return None, None
-
-def compare_description(desc_a: str, desc_b: str, api_key: str) -> bool:
-    """Compare two person descriptions using OpenAI SDK to decide if they are the same person.
-    Returns True if they likely refer to the same person, False otherwise.
-    """
-    try:
-        client = OpenAI(api_key=api_key, timeout=10)
-
-        system_prompt = (
-            "Compare two short surveillance descriptions of people and answer with exactly one word: "
-            "Note that the descriptions are imprecise. Ingore age. Focus on clothing. "
-            "SAME if this could have been the same person, DIFFERENT if this is impossible. "
-        )
-
-        user_prompt = (
-            f"Description A: {desc_a}\n"
-            f"Description B: {desc_b}\n\n"
-            "Answer with exactly one word: SAME or DIFFERENT"
-        )
-
-        completion = client.chat.completions.create(
-            model="gpt-4.1-nano",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            max_completion_tokens=10,
-        )
-
-        print(completion)
-        content = completion.choices[0].message.content.strip().upper()
-        logger.info(f"compare_description content: {content}")
-        return "SAME" in content
-    except Exception as e:
-        logger.error(f"compare_description exception: {e}")
-        return False
-

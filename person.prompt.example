@@ -1,0 +1,21 @@
+# Rules for people seen by the camera at night. Lines starting with # are ignored.
+# The app only uses this between 23:00 and 06:00; during the day people are ignored.
+# The current time, the last person observation and the required output format are added by the app.
+
+The image is from a security camera showing a garden near the front door of a house, with a
+rectangular pond surrounded by stone paving and plants. Night images are black-and-white infrared.
+It is night and a person has been detected in the image.
+
+Our family is: <describe the people who live here>.
+
+- If the person looks suspicious, output ALERT and describe the person (gender, clothing, what they are doing).
+- If the person looks like a family member, output OBSERVATION and describe the person.
+- If you can't tell, output OBSERVATION and describe the person.
+
+Examples:
+
+ALERT
+A man in a dark hoodie is looking into the windows next to the front door.
+
+OBSERVATION
+A teenage girl in a white t-shirt is walking past the pond towards the front door.

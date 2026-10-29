@@ -1,6 +1,7 @@
 import os
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime
+import requests
 
 # Why watchdogs?
 # Websocket connections to the UniFi Protect NVR can drop or the callback may be
@@ -12,6 +13,8 @@ from datetime import datetime, timedelta
 
 WEBSOCKET_STALE_SECONDS = int(os.getenv("WEBSOCKET_STALE_SECONDS", "300"))
 WEBSOCKET_INITIAL_TIMEOUT = int(os.getenv("WEBSOCKET_INITIAL_TIMEOUT", "60"))  # Time to wait for first message
+HEALTHCHECK_URL = os.getenv("HEALTHCHECK_URL")
+HEALTHCHECK_INTERVAL_SECONDS = int(os.getenv("HEALTHCHECK_INTERVAL_SECONDS", "300"))
 
 _last_ws_message_at = None
 _connection_start_time = None
@@ -37,10 +40,34 @@ def make_sync_callback(loop, async_callback, logger=None):
                 logger.error(f"Failed to schedule callback on event loop: {e}")
     return sync_callback
 
+async def ping_url(url, logger=None):
+    try:
+        await asyncio.to_thread(requests.get, url, timeout=10)
+    except Exception as e:
+        if logger:
+            logger.warning(f"Healthcheck ping failed: {e}")
+
+async def run_healthcheck_pings(logger, tz):
+    """Ping HEALTHCHECK_URL periodically while the websocket is healthy.
+
+    Pings stop if the process dies, hangs, or loses its websocket, which lets
+    the external monitor raise an alert.
+    """
+    if not HEALTHCHECK_URL:
+        return
+    while True:
+        now = datetime.now(tz) if tz is not None else datetime.now()
+        if _last_ws_message_at is not None and (now - _last_ws_message_at).total_seconds() <= WEBSOCKET_STALE_SECONDS:
+            await ping_url(HEALTHCHECK_URL, logger)
+        elif logger:
+            logger.warning("Skipping healthcheck ping: websocket is stale")
+        await asyncio.sleep(HEALTHCHECK_INTERVAL_SECONDS)
+
 class WebsocketWatchdog:
-    def __init__(self, protect, unsubscribe_fn, loop, logger, tz):
+    def __init__(self, protect, unsubscribe_fn, loop, logger, tz, callback):
         self.protect = protect
         self.unsubscribe_fn = unsubscribe_fn
+        self.callback = callback
         self.loop = loop
         self.logger = logger
         self.tz = tz
@@ -88,9 +115,7 @@ class WebsocketWatchdog:
                         if self.logger:
                             self.logger.warning(f"Error during protect.update() before resubscribe: {e_upd}")
                     try:
-                        # The caller should re-bind the async callback; import locally to avoid cycles
-                        from .main import callback  # type: ignore
-                        cb = make_sync_callback(self.loop, callback, self.logger)
+                        cb = make_sync_callback(self.loop, self.callback, self.logger)
                         self.unsubscribe_fn = self.protect.subscribe_websocket(cb)
                         reset_connection_start_time(now)
                         update_ws_heartbeat(now)
@@ -110,39 +135,3 @@ class WebsocketWatchdog:
             except Exception as e:
                 if self.logger:
                     self.logger.error(f"Watchdog encountered an error: {e}")
-
-async def run_twice_daily_status():
-    from datetime import timedelta
-    from .main import TZ, args, send_notification, PUSHOVER_API_TOKEN, PUSHOVER_USER_KEY, logger
-    while True:
-        now = datetime.now(TZ) if TZ is not None else datetime.now()
-        morning = now.replace(hour=8, minute=0, second=0, microsecond=0)
-        evening = now.replace(hour=20, minute=0, second=0, microsecond=0)
-        if now < morning:
-            next_run = morning
-        elif now < evening:
-            next_run = evening
-        else:
-            next_run = morning + timedelta(days=1)
-        sleep_seconds = max(0, (next_run - now).total_seconds())
-        if logger:
-            logger.info(f"Next status check scheduled for {next_run.strftime('%Y-%m-%d %H:%M:%S')}")
-        try:
-            await asyncio.sleep(sleep_seconds)
-        except Exception:
-            continue
-        try:
-            if args and getattr(args, 'notify', False):
-                send_notification(
-                    "System online",
-                    PUSHOVER_API_TOKEN,
-                    PUSHOVER_USER_KEY,
-                    priority=-1
-                )
-                if logger:
-                    logger.info("Sent twice-daily status notification: System online")
-        except Exception as e:
-            if logger:
-                logger.error(f"Failed to send status notification: {e}")
-
-

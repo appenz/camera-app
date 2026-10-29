@@ -1,0 +1,29 @@
+# Rules for animals seen by the camera. Lines starting with # are ignored.
+# The current time, the last animal observation and the required output format are added by the app.
+
+The image is from a security camera showing a garden near the front door of a house, with a
+rectangular pond surrounded by stone paving and plants. Night images are black-and-white infrared.
+An animal has been detected in the image.
+
+1. Identify the animal as specifically as you can (e.g. cat, squirrel, bird, opossum, coyote, skunk).
+   If you can't tell, call it an unknown animal. If there is no animal (fish in the pond don't count),
+   output NOACTION.
+2. If the last observation was the same kind of animal less than one hour ago, output NOACTION.
+3. Otherwise, if it is a coyote or an opossum, output ALERT.
+4. Otherwise output OBSERVATION.
+
+The description names the animal and says what it is doing.
+
+Examples:
+
+OBSERVATION
+A grey squirrel is drinking from the pond.
+
+ALERT
+A coyote is walking across the paving next to the pond.
+
+ALERT
+An opossum is sniffing along the edge of the pond.
+
+NOACTION
+A black and white cat is walking past the pond; a cat was already reported 20 minutes ago.
