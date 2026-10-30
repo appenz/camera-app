@@ -8,7 +8,8 @@ The system analyzes camera feeds in real time and sends notifications with image
 
 The application offers real-time monitoring of UniFi Protect security cameras. In a nutshell it:
 - Waits for Protect to report motion on a camera
-- While motion lasts (up to 2 minutes), grabs a full-resolution frame from the camera's RTSPS stream every 2 seconds, so a frame that was misread at first gets another look
+- While motion lasts (at least 10 seconds, up to 2 minutes), grabs a full-resolution frame from the camera's RTSPS stream every 2 seconds, so a frame that was misread at first gets another look
+- When the motion event ends, gets a second opinion from Protect's thumbnail of the event, which is cropped around the motion and catches small or distant animals
 - Classifies each frame as a person, a raccoon, another animal, or nothing, using the OpenAI Decisions API (`gpt-6-luna`)
 - Alerts immediately on raccoons, and asks `gpt-6-luna` what to report about people and other animals, based on rules in prompt files
 - Pings [Healthchecks.io](https://healthchecks.io/) so you hear about it if the app goes down, and warns you if no motion has been processed for 12 hours
@@ -52,6 +53,8 @@ Each frame is first classified as a person, a raccoon, another animal, or nothin
 - **Animal** (anything not positively identified as a raccoon): `gpt-6-luna` gets the image plus the rules in `animals.prompt`. The example rules report each new animal as an observation, raise an alert for coyotes and opossums, and stay quiet if the same kind of animal was already reported in the last hour.
 - **Person**: only considered between 23:00 and 06:00. `gpt-6-luna` gets the image plus the rules in `person.prompt`, which describe your household so family members are reported as observations and anyone else as an alert.
 - **Nothing**: ignored.
+
+When a Protect motion event ends, its thumbnail (360x360, cropped around the motion) is classified the same way. If it shows something none of the frames sampled during the event found, it goes through the same rules and any notification is sent as a "second opinion" follow-up.
 
 The model answers with `ALERT`, `OBSERVATION` or `NOACTION` and a short description. It also gets the current time and the last observation, so the prompts can refer to them. Lines in the prompt files beginning with `#` are ignored. Both prompt files are gitignored, since `person.prompt` describes your family.
 

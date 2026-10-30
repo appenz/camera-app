@@ -4,12 +4,13 @@ import time
 import argparse
 import logging
 from logging.handlers import TimedRotatingFileHandler
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 import pytz
 from uiprotect import ProtectApiClient
 from events import display_event_history
 from images import save_camera_image
-from alerts import decide
+from alerts import classify, decide
 from uiprotect.data.websocket import WSAction, WSSubscriptionMessage
 from uiprotect.data.devices import Camera
 from uiprotect.data.nvr import Event
@@ -42,6 +43,13 @@ MOTION_EVENT_TYPES = {
 }
 _watching = set()  # camera ids currently being sampled
 _open_events = {}  # camera id -> {event id: monotonic time the event started}
+
+# After an event ends, Protect's motion-centered event thumbnail gets a second look.
+THUMBNAIL_WAIT_SECONDS = 2
+THUMBNAIL_ATTEMPTS = 10
+FRAME_HISTORY = timedelta(minutes=10)
+_frame_subjects = {}  # camera id -> [(utc time, subject)] for recently sampled frames
+_second_opinions = {}  # event id -> monotonic time, so each event is checked once
 motion_monitor = None
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -167,6 +175,30 @@ async def motion_active(camera):
         return False
     return bool(raw.get("isMotionDetected") or raw.get("isSmartDetected"))
 
+def report(camera, decision, image_path, label):
+    """Log a decision and send its notification, if any."""
+    probabilities = " ".join(f"{k}={v:.2f}" for k, v in decision.probabilities.items())
+    notification = decision.notification
+    if notification is None:
+        logger.info(f"{label}: {decision.subject} ({probabilities}), no notification")
+        return
+    logger.info(f"{label}: {decision.subject} ({probabilities}), priority {notification.priority}: {notification.message}")
+    if args.notify:
+        send_notification(
+            f"{label}: {notification.message}",
+            PUSHOVER_API_TOKEN,
+            PUSHOVER_USER_KEY,
+            priority=notification.priority,
+            title=notification.title,
+            attachment=image_path
+        )
+
+def record_frame_subject(camera, subject):
+    now = datetime.now(timezone.utc)
+    frames = _frame_subjects.setdefault(camera.id, [])
+    frames.append((now, subject))
+    frames[:] = [(t, s) for t, s in frames if now - t < FRAME_HISTORY]
+
 async def process_frame(camera):
     """Capture one frame, classify it and send a notification if needed."""
     now = datetime.now(TZ) if TZ is not None else datetime.now()
@@ -176,22 +208,8 @@ async def process_frame(camera):
             return
         decision = await decide(image_path, OPENAI_API_KEY, now)
         motion_monitor.record_motion()
-
-        probabilities = " ".join(f"{k}={v:.2f}" for k, v in decision.probabilities.items())
-        notification = decision.notification
-        if notification is None:
-            logger.info(f"{camera.name}: {decision.subject} ({probabilities}), no notification")
-            return
-        logger.info(f"{camera.name}: {decision.subject} ({probabilities}), priority {notification.priority}: {notification.message}")
-        if args.notify:
-            send_notification(
-                f"{camera.name}: {notification.message}",
-                PUSHOVER_API_TOKEN,
-                PUSHOVER_USER_KEY,
-                priority=notification.priority,
-                title=notification.title,
-                attachment=image_path
-            )
+        record_frame_subject(camera, decision.subject)
+        report(camera, decision, image_path, camera.name)
     except Exception as e:
         timestamp = now.strftime("%m-%d %H:%M:%S")
         with open('log/error.log', 'a') as error_log:
@@ -236,6 +254,62 @@ async def start_watch(camera):
     finally:
         _watching.discard(camera.id)
 
+async def save_event_thumbnail(camera, event):
+    """Save Protect's motion-centered thumbnail of an ended event. Returns the path or None."""
+    # Protect creates the thumbnail shortly after the event ends.
+    for _ in range(THUMBNAIL_ATTEMPTS):
+        await asyncio.sleep(THUMBNAIL_WAIT_SECONDS)
+        raw = await protect.api_request_obj(f"events/{event.id}")
+        if raw.get("metadata", {}).get("detectedThumbnails"):
+            break
+    else:
+        logger.warning(f"{camera.name}: no thumbnail for {event.type.value} event {event.id}")
+        return None
+    image = await protect.api_request_raw(f"events/{event.id}/thumbnail")
+    if not image:
+        return None
+    start = event.start.astimezone(TZ) if TZ is not None else event.start.astimezone()
+    path = Path("images") / f"{camera.name}_{start:%Y-%m-%d_%H-%M-%S}_thumb.jpg"
+    path.write_bytes(image)
+    return str(path)
+
+def subjects_seen(camera, since):
+    """Subjects the sampled frames found since the given time."""
+    seen = {s for t, s in _frame_subjects.get(camera.id, []) if t >= since}
+    if "raccoon" in seen:
+        seen.add("animal")
+    return seen
+
+async def second_opinion(camera, event):
+    """Classify the event thumbnail; report it if it finds something the sampled frames missed."""
+    cutoff = time.monotonic() - FRAME_HISTORY.total_seconds()
+    for event_id in [e for e, t in _second_opinions.items() if t < cutoff]:
+        del _second_opinions[event_id]
+    if event.id in _second_opinions:
+        return
+    _second_opinions[event.id] = time.monotonic()
+
+    try:
+        image_path = await save_event_thumbnail(camera, event)
+        if image_path is None:
+            return
+        subject, probabilities = await classify(image_path, OPENAI_API_KEY)
+        # Let sampling of this motion finish so the comparison covers all of its frames.
+        deadline = time.monotonic() + MAX_WATCH_SECONDS
+        while camera.id in _watching and time.monotonic() < deadline:
+            await asyncio.sleep(1)
+        seen = subjects_seen(camera, event.start)
+        label = f"{camera.name} (second opinion)"
+        if subject == "none" or subject in seen:
+            details = " ".join(f"{k}={v:.2f}" for k, v in probabilities.items())
+            logger.info(f"{label}: {subject} ({details}), frames saw {sorted(seen) or 'nothing'}")
+            return
+        now = datetime.now(TZ) if TZ is not None else datetime.now()
+        decision = await decide(image_path, OPENAI_API_KEY, now, probabilities)
+        report(camera, decision, image_path, label)
+    except Exception as e:
+        logger.error(f"{camera.name}: second opinion for event {event.id} failed: {e}")
+
 def watched_camera(camera_id):
     camera = protect.bootstrap.cameras.get(camera_id)
     if camera is None or (camera_filter is not None and camera.name != camera_filter):
@@ -256,6 +330,7 @@ async def handle_event(msg, event):
     events = _open_events.setdefault(camera.id, {})
     if event.end is not None:
         events.pop(event.id, None)
+        await second_opinion(camera, event)
         return
     if msg.action != WSAction.ADD:
         return

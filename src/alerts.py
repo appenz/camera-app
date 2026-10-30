@@ -74,16 +74,23 @@ def parse_response(text):
     return action, " ".join(lines[1:])
 
 
-async def decide(image_path, api_key, now):
-    """Classify the image and decide what (if anything) to send."""
+async def classify(image_path, api_key):
+    """Return (subject, probabilities) for the image."""
+    probabilities = await asyncio.to_thread(classify_probabilities, image_path, api_key)
+    return pick_subject(probabilities), probabilities
+
+
+async def decide(image_path, api_key, now, probabilities=None):
+    """Classify the image (unless probabilities are given) and decide what (if anything) to send."""
     async with _lock:
-        return await _decide(image_path, api_key, now)
+        return await _decide(image_path, api_key, now, probabilities)
 
 
-async def _decide(image_path, api_key, now):
+async def _decide(image_path, api_key, now, probabilities):
     global _last_raccoon_alert
 
-    probabilities = await asyncio.to_thread(classify_probabilities, image_path, api_key)
+    if probabilities is None:
+        probabilities = await asyncio.to_thread(classify_probabilities, image_path, api_key)
     subject = pick_subject(probabilities)
 
     if subject == "none":
