@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 import argparse
 import logging
 from logging.handlers import TimedRotatingFileHandler
@@ -11,6 +12,8 @@ from images import save_camera_image
 from alerts import decide
 from uiprotect.data.websocket import WSAction, WSSubscriptionMessage
 from uiprotect.data.devices import Camera
+from uiprotect.data.nvr import Event
+from uiprotect.data.types import EventType
 from pushover import send_notification
 from watchdog import (
     WebsocketWatchdog,
@@ -27,10 +30,18 @@ camera_filter = None
 test_mode = False  # Set to True to analyze all images
 protect = None
 
-# Protect only sends a camera update when motion starts, so sample frames ourselves while it lasts.
+# Sample frames ourselves while a Protect motion event lasts.
 FRAME_INTERVAL_SECONDS = 2
+MIN_WATCH_SECONDS = 10
 MAX_WATCH_SECONDS = 120
+MOTION_EVENT_TYPES = {
+    EventType.MOTION,
+    EventType.SMART_DETECT,
+    EventType.SMART_DETECT_LINE,
+    EventType.SMART_DETECT_LOITER,
+}
 _watching = set()  # camera ids currently being sampled
+_open_events = {}  # camera id -> {event id: monotonic time the event started}
 motion_monitor = None
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -187,39 +198,87 @@ async def process_frame(camera):
             error_log.write(f"{timestamp} - Error processing image from {camera.name}: {e}\n")
         logger.error(f"Error processing image from {camera.name}: {e}")
 
+def has_open_event(camera):
+    """Whether a Protect motion event on the camera has started and not yet ended."""
+    events = _open_events.get(camera.id, {})
+    # An event whose end we missed (e.g. websocket reconnect) must not keep the camera watched forever.
+    cutoff = time.monotonic() - MAX_WATCH_SECONDS
+    for event_id in [e for e, started in events.items() if started < cutoff]:
+        del events[event_id]
+    return bool(events)
+
+async def keep_watching(camera, elapsed):
+    if test_mode or elapsed > MAX_WATCH_SECONDS:
+        return False
+    if elapsed < MIN_WATCH_SECONDS or has_open_event(camera):
+        return True
+    return await motion_active(camera)
+
 async def watch_camera(camera):
-    """Keep sampling frames while Protect reports motion, so a misread first frame gets a second look."""
+    """Keep sampling frames while there is motion, so a misread first frame gets a second look."""
     start = datetime.now()
     frames = 0
     while True:
         await process_frame(camera)
         frames += 1
         elapsed = (datetime.now() - start).total_seconds()
-        if test_mode or elapsed > MAX_WATCH_SECONDS or not await motion_active(camera):
+        if not await keep_watching(camera, elapsed):
             break
         await asyncio.sleep(FRAME_INTERVAL_SECONDS)
     logger.info(f"{camera.name}: motion ended after {frames} frame(s) in {elapsed:.0f}s")
+
+async def start_watch(camera):
+    if camera.id in _watching:
+        return
+    _watching.add(camera.id)
+    try:
+        await watch_camera(camera)
+    finally:
+        _watching.discard(camera.id)
+
+def watched_camera(camera_id):
+    camera = protect.bootstrap.cameras.get(camera_id)
+    if camera is None or (camera_filter is not None and camera.name != camera_filter):
+        return None
+    return camera
+
+async def handle_event(msg, event):
+    """Track Protect motion events; their start triggers sampling.
+
+    uiprotect drops camera updates that only change isMotionDetected, so plain
+    motion (e.g. an animal) never shows up as a camera update when it starts.
+    """
+    if event.type not in MOTION_EVENT_TYPES:
+        return
+    camera = watched_camera(event.camera_id)
+    if camera is None:
+        return
+    events = _open_events.setdefault(camera.id, {})
+    if event.end is not None:
+        events.pop(event.id, None)
+        return
+    if msg.action != WSAction.ADD:
+        return
+    events[event.id] = time.monotonic()
+    logger.info(f"{camera.name}: {event.type.value} event started")
+    await start_watch(camera)
 
 # subscribe to Websocket for updates to UFPs
 async def callback(msg: WSSubscriptionMessage):
     update_ws_heartbeat(datetime.now(TZ) if TZ is not None else datetime.now())
 
-    if msg.action != WSAction.UPDATE:
-        return
-    camera = getattr(msg, "new_obj", None)
-    if not isinstance(camera, Camera):
-        return
-    if camera_filter is not None and camera.name != camera_filter:
-        return
-    if camera.id in _watching:
+    obj = getattr(msg, "new_obj", None)
+    if isinstance(obj, Event):
+        await handle_event(msg, obj)
         return
 
-    _watching.add(camera.id)
-    try:
-        if test_mode or await motion_active(camera):
-            await watch_camera(camera)
-    finally:
-        _watching.discard(camera.id)
+    if msg.action != WSAction.UPDATE or not isinstance(obj, Camera):
+        return
+    camera = watched_camera(obj.id)
+    if camera is None or camera.id in _watching:
+        return
+    if test_mode or await motion_active(camera):
+        await start_watch(camera)
 
 def parse_args():
     """Parse command line arguments."""
